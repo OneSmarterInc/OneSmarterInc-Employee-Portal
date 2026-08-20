@@ -5,6 +5,7 @@ import Layout from './components/Layout.jsx'
 import Login from './pages/Login.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Employees from './pages/Employees.jsx'
+import EmployeeDetail from './pages/EmployeeDetail.jsx'
 import Attendance from './pages/Attendance.jsx'
 import Leave from './pages/Leave.jsx'
 import Documents from './pages/Documents.jsx'
@@ -30,7 +31,7 @@ export default function App() {
     <Route path="/resignation" element={<Resignations user={user}/>} />
     <Route path="/account" element={<Account user={user}/>} />
     {user.role === 'MANAGER' ? <>
-      <Route path="/employees" element={<Employees/>}/><Route path="/resignations" element={<Resignations user={user}/>}/><Route path="/settings" element={<Settings/>}/><Route path="/audit" element={<Audit/>}/>
+      <Route path="/employees" element={<Employees/>}/><Route path="/employees/:id" element={<EmployeeDetail/>}/><Route path="/resignations" element={<Resignations user={user}/>}/><Route path="/settings" element={<Settings/>}/><Route path="/audit" element={<Audit/>}/>
     </> : null}
     <Route path="*" element={<Navigate to="/" replace/>}/>
   </Routes></Layout>
