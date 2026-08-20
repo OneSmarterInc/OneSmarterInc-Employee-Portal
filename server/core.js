@@ -143,15 +143,10 @@ export async function bootstrapManagerIfNeeded() {
   const email = process.env.BOOTSTRAP_MANAGER_EMAIL?.trim().toLowerCase()
   const password = process.env.BOOTSTRAP_MANAGER_PASSWORD
   if (!email || !password) return
+  const exists = await sql`SELECT id FROM users WHERE role = 'MANAGER' LIMIT 1`
+  if (exists.length) return
   const hash = await bcrypt.hash(password, 12)
-  await sql`INSERT INTO users(email, password_hash, full_name, role, active)
-    VALUES (${email}, ${hash}, ${process.env.BOOTSTRAP_MANAGER_NAME || 'Manager'}, 'MANAGER', TRUE)
-    ON CONFLICT (email) DO UPDATE SET
-      password_hash = EXCLUDED.password_hash,
-      full_name = EXCLUDED.full_name,
-      role = 'MANAGER',
-      active = TRUE,
-      updated_at = NOW()`
+  await sql`INSERT INTO users(email, password_hash, full_name, role) VALUES (${email}, ${hash}, ${process.env.BOOTSTRAP_MANAGER_NAME || 'Manager'}, 'MANAGER') ON CONFLICT (email) DO NOTHING`
 }
 
 export async function comparePassword(password, hash) { return bcrypt.compare(password, hash) }
