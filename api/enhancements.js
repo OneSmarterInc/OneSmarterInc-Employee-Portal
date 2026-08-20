@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs'
 import nodemailer from 'nodemailer'
-import { sql, json, body, requireManager, audit, decrypt, smtpConfig, employeeCode } from '../server/core.js'
+import { sql, json, body, requireManager, audit, decrypt, smtpConfig, employeeCode, brandedEmail, emailDetails } from '../server/core.js'
 
 const ok = (res, data = {}) => json(res, 200, data)
 const created = (res, data = {}) => json(res, 201, data)
@@ -20,6 +20,8 @@ function ensureSchema() {
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS personal_email TEXT`
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS official_phone TEXT`
     await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS personal_phone TEXT`
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS holiday_region TEXT NOT NULL DEFAULT 'INDIA'`
+    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS weekly_off_days INTEGER[] NOT NULL DEFAULT ARRAY[0]`
     await sql`UPDATE employees SET official_phone=phone WHERE official_phone IS NULL AND phone IS NOT NULL`
   })()
   return schemaPromise
@@ -33,11 +35,10 @@ function portalUrl(req) {
 
 function smtpTransportOptions(cfg) {
   const port = Number(cfg?.port) || 587
-  const secure = port === 465
   return {
     host: cfg?.host || 'smtp.ionos.com',
     port,
-    secure,
+    secure: port === 465,
     requireTLS: port === 587,
     auth: { user: cfg.username, pass: decrypt(cfg.password_enc) },
     tls: { servername: cfg?.host || 'smtp.ionos.com', minVersion: 'TLSv1.2' },
@@ -51,8 +52,7 @@ async function transportFromSettings() {
   const cfg = await smtpConfig()
   if (!cfg?.username || !cfg?.password_enc || !cfg?.from_email) return { cfg: null, transporter: null }
   const normalized = { ...cfg, host: cfg.host || 'smtp.ionos.com', port: Number(cfg.port) || 587 }
-  const transporter = nodemailer.createTransport(smtpTransportOptions(normalized))
-  return { cfg: normalized, transporter }
+  return { cfg: normalized, transporter: nodemailer.createTransport(smtpTransportOptions(normalized)) }
 }
 
 async function sendDetailed({ to, subject, html }) {
@@ -62,7 +62,7 @@ async function sendDetailed({ to, subject, html }) {
     from: `"${cfg.from_name || 'OneSmarter, Inc.'}" <${cfg.from_email}>`,
     to,
     subject,
-    html,
+    html: brandedEmail({ title: subject, bodyHtml: html }),
   })
   const accepted = (info.accepted || []).map(String)
   const rejected = (info.rejected || []).map(String)
@@ -78,7 +78,9 @@ async function departmentId(name) {
 
 async function welcomeEmail(req, employee, user, password, personalEmail) {
   const url = portalUrl(req)
-  const html = `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#161616"><div style="border-bottom:4px solid #e31b23;padding-bottom:12px"><h2 style="margin:0;color:#e31b23">OneSmarter, Inc.</h2></div><p>Hello ${user.full_name},</p><p>Your employee portal account has been created.</p><table style="border-collapse:collapse;width:100%;margin:18px 0"><tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Portal</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><a href="${url}">${url}</a></td></tr><tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Employee ID</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><b>${employee.employee_code}</b></td></tr><tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Login email</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><b>${user.email}</b></td></tr><tr><td style="padding:8px">Temporary password</td><td style="padding:8px"><b>${password}</b></td></tr></table><p>Please sign in and change your password from Account after your first login.</p><p>Regards,<br/>OneSmarter, Inc.</p></div>`
+  const offNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+  const weekly=(employee.weekly_off_days||[0]).map(v=>offNames[Number(v)]).filter(Boolean).join(', ')
+  const html = `<p>Hello ${user.full_name},</p><p>Your OneSmarter employee portal account has been created.</p>${emailDetails([['Portal',`<a href="${url}">${url}</a>`],['Employee ID',employee.employee_code],['Login email',user.email],['Temporary password',password],['Holiday calendar',employee.holiday_region],['Weekly off',weekly||'None']])}<p>Please sign in and change your password from Account after your first login.</p><p>Regards,<br/>OneSmarter, Inc.</p>`
   const recipients = [...new Set([user.email, personalEmail].filter(Boolean).map(v => String(v).trim().toLowerCase()))]
   const deliveries = []
   for (const to of recipients) {
@@ -94,21 +96,23 @@ async function createEmployee(req, manager, data) {
   const personalEmail = String(data.personal_email || '').trim().toLowerCase() || null
   const password = String(data.password ?? '')
   if (!name || !officialEmail || !password) throw new Error('Name, official email and temporary password are required')
+  const region = ['INDIA','US','BOTH'].includes(data.holiday_region) ? data.holiday_region : 'INDIA'
+  const weeklyOff = Array.isArray(data.weekly_off_days) ? [...new Set(data.weekly_off_days.map(Number).filter(v=>v>=0&&v<=6))] : [0]
   const hash = await bcrypt.hash(password, 12)
   const userRows = await sql`INSERT INTO users(email,password_hash,full_name,role) VALUES (${officialEmail},${hash},${name},'EMPLOYEE') RETURNING id,email,full_name`
   const user = userRows[0]
   const depId = await departmentId(data.department)
   const code = String(data.employee_code || '').trim() || employeeCode()
-  const empRows = await sql`INSERT INTO employees(user_id,employee_code,department_id,designation,date_of_joining,manager_id,wfh_allowed,phone,official_phone,personal_phone,personal_email) VALUES (${user.id},${code},${depId},${data.designation || null},${data.date_of_joining || null},${manager.id},${Boolean(data.wfh_allowed)},${data.official_phone || null},${data.official_phone || null},${data.personal_phone || null},${personalEmail}) RETURNING *`
+  const empRows = await sql`INSERT INTO employees(user_id,employee_code,department_id,designation,date_of_joining,manager_id,wfh_allowed,phone,official_phone,personal_phone,personal_email,holiday_region,weekly_off_days) VALUES (${user.id},${code},${depId},${data.designation || null},${data.date_of_joining || null},${manager.id},${Boolean(data.wfh_allowed)},${data.official_phone || null},${data.official_phone || null},${data.personal_phone || null},${personalEmail},${region},${weeklyOff}) RETURNING *`
   const employee = empRows[0]
   await sql`INSERT INTO leave_balances(employee_id,leave_type_id,year,opening) SELECT ${employee.id}, id, EXTRACT(YEAR FROM CURRENT_DATE)::int, default_days FROM leave_types WHERE active=TRUE ON CONFLICT DO NOTHING`
   const delivery = await welcomeEmail(req, employee, user, password, personalEmail)
-  await audit(manager.id, 'EMPLOYEE_CREATED', 'employee', employee.id, { official_email: officialEmail, personal_email: personalEmail, wfh_allowed: employee.wfh_allowed })
+  await audit(manager.id, 'EMPLOYEE_CREATED', 'employee', employee.id, { official_email: officialEmail, personal_email: personalEmail, wfh_allowed: employee.wfh_allowed, holiday_region: region, weekly_off_days: weeklyOff })
   return { employee: { ...employee, full_name: user.full_name, official_email: user.email }, email_delivery: delivery }
 }
 
 async function employeeRows() {
-  return sql`SELECT e.id,e.employee_code,e.designation,e.wfh_allowed,e.status,e.date_of_joining,e.personal_email,e.official_phone,e.personal_phone,u.full_name,u.email AS official_email,u.active,d.name AS department,(SELECT COALESCE(r.approved_last_day,r.requested_last_day) FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS last_day,(SELECT r.status FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS resignation_status FROM employees e JOIN users u ON u.id=e.user_id LEFT JOIN departments d ON d.id=e.department_id ORDER BY u.full_name`
+  return sql`SELECT e.id,e.employee_code,e.designation,e.wfh_allowed,e.status,e.date_of_joining,e.personal_email,e.official_phone,e.personal_phone,e.holiday_region,e.weekly_off_days,u.full_name,u.email AS official_email,u.active,d.name AS department,(SELECT COALESCE(r.approved_last_day,r.requested_last_day) FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS last_day,(SELECT r.status FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS resignation_status FROM employees e JOIN users u ON u.id=e.user_id LEFT JOIN departments d ON d.id=e.department_id ORDER BY u.full_name`
 }
 
 export default async function handler(req, res) {
