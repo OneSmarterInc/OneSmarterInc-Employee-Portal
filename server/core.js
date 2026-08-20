@@ -118,17 +118,32 @@ export async function smtpConfig() {
   return rows[0] || null
 }
 
+export function smtpTransportOptions(cfg) {
+  const port = Number(cfg?.port || 465)
+  const secure = port === 465 ? true : port === 587 ? false : Boolean(cfg?.secure)
+  return {
+    host: cfg?.host || 'smtp.ionos.com',
+    port,
+    secure,
+    requireTLS: port === 587,
+    auth: { user: cfg.username, pass: decrypt(cfg.password_enc) },
+    tls: { minVersion: 'TLSv1.2' },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 30000,
+  }
+}
+
+export function createSmtpTransport(cfg) {
+  return nodemailer.createTransport(smtpTransportOptions(cfg))
+}
+
 export async function sendEmail({ to, subject, html }) {
   const cfg = await smtpConfig()
   if (!cfg?.host || !cfg?.username || !cfg?.password_enc || !cfg?.from_email) return { skipped: true }
-  const transporter = nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port || 587,
-    secure: cfg.secure,
-    auth: { user: cfg.username, pass: decrypt(cfg.password_enc) },
-  })
-  await transporter.sendMail({ from: `"${cfg.from_name || 'One Smarter Inc.'}" <${cfg.from_email}>`, to, subject, html })
-  return { sent: true }
+  const transporter = createSmtpTransport(cfg)
+  const info = await transporter.sendMail({ from: `"${cfg.from_name || 'One Smarter Inc.'}" <${cfg.from_email}>`, to, subject, html })
+  return { sent: true, accepted: info.accepted || [], rejected: info.rejected || [], response: info.response || '' }
 }
 
 export async function notifyManagers(title, message, link, subject = title) {
