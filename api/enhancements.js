@@ -1,6 +1,5 @@
 import bcrypt from 'bcryptjs'
-import nodemailer from 'nodemailer'
-import { sql, json, body, requireManager, audit, decrypt, smtpConfig, employeeCode } from '../server/core.js'
+import { sql, json, body, requireManager, audit, decrypt, smtpConfig, employeeCode, createSmtpTransport } from '../server/core.js'
 
 const ok = (res, data = {}) => json(res, 200, data)
 const created = (res, data = {}) => json(res, 201, data)
@@ -34,13 +33,7 @@ function portalUrl(req) {
 async function transportFromSettings() {
   const cfg = await smtpConfig()
   if (!cfg?.host || !cfg?.username || !cfg?.password_enc || !cfg?.from_email) return { cfg: null, transporter: null }
-  const transporter = nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port || 587,
-    secure: Boolean(cfg.secure),
-    auth: { user: cfg.username, pass: decrypt(cfg.password_enc) },
-  })
-  return { cfg, transporter }
+  return { cfg, transporter: createSmtpTransport(cfg) }
 }
 
 async function sendDetailed({ to, subject, html }) {
@@ -74,23 +67,26 @@ async function departmentId(name) {
 async function welcomeEmail(req, employee, user, password, personalEmail) {
   const url = portalUrl(req)
   const html = `
-    <div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#243447">
-      <h2 style="margin-bottom:8px">Welcome to One Smarter Inc.</h2>
-      <p>Your employee portal account has been created.</p>
-      <table style="border-collapse:collapse;width:100%;margin:18px 0">
-        <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Portal</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><a href="${url}">${url}</a></td></tr>
-        <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Employee ID</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><b>${employee.employee_code}</b></td></tr>
-        <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Login email</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><b>${user.email}</b></td></tr>
-        <tr><td style="padding:8px">Temporary password</td><td style="padding:8px"><b>${password}</b></td></tr>
-      </table>
-      <p>Please sign in and change your password from Account after your first login.</p>
+    <div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#171717;border:1px solid #ececec;border-radius:14px;overflow:hidden">
+      <div style="background:#111;padding:18px 22px;color:#fff;border-bottom:4px solid #e21d2f"><b style="font-size:20px">OneSmarter, Inc.</b><div style="font-size:12px;margin-top:4px;color:#ddd">People Portal</div></div>
+      <div style="padding:22px">
+        <h2 style="margin:0 0 8px">Welcome to OneSmarter, Inc.</h2>
+        <p>Your employee portal account has been created.</p>
+        <table style="border-collapse:collapse;width:100%;margin:18px 0">
+          <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Portal</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><a href="${url}" style="color:#e21d2f">${url}</a></td></tr>
+          <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Employee ID</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><b>${employee.employee_code}</b></td></tr>
+          <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">Login email</td><td style="padding:8px;border-bottom:1px solid #e5e7eb"><b>${user.email}</b></td></tr>
+          <tr><td style="padding:8px">Temporary password</td><td style="padding:8px"><b>${password}</b></td></tr>
+        </table>
+        <p>Please sign in and change your password from Account after your first login.</p>
+      </div>
     </div>`
 
   const recipients = [...new Set([user.email, personalEmail].filter(Boolean).map(v => String(v).trim().toLowerCase()))]
   const deliveries = []
   for (const to of recipients) {
     try {
-      deliveries.push({ to, ...(await sendDetailed({ to, subject: 'Your One Smarter Inc. employee portal account', html })) })
+      deliveries.push({ to, ...(await sendDetailed({ to, subject: 'Your OneSmarter employee portal account', html })) })
     } catch (error) {
       deliveries.push({ to, configured: true, accepted: [], rejected: [to], error: error.message })
     }
@@ -172,8 +168,8 @@ export default async function handler(req, res) {
       await transporter.verify()
       const result = await sendDetailed({
         to: target,
-        subject: 'One Smarter Inc. SMTP delivery test',
-        html: '<p>This message confirms that the One Smarter Inc. employee portal connected to your SMTP server and submitted a test email.</p>',
+        subject: 'OneSmarter SMTP delivery test',
+        html: '<div style="font-family:Arial,sans-serif"><h2>OneSmarter SMTP test</h2><p>This message confirms that the employee portal connected to your SMTP server and submitted a test email successfully.</p></div>',
       })
       if (!result.accepted.length) return bad(res, result.response || 'SMTP server did not accept the recipient', 502)
       await audit(manager.id, 'SMTP_TEST_SENT', 'settings', 'smtp', { target, accepted: result.accepted, rejected: result.rejected, response: result.response })
