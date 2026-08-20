@@ -6,6 +6,7 @@ import nodemailer from 'nodemailer'
 import { get, put } from '@vercel/blob'
 
 const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED
+if (!process.env.POSTGRES_URL && databaseUrl) process.env.POSTGRES_URL = databaseUrl
 export const sql = neon(databaseUrl || '')
 const encoder = new TextEncoder()
 const secret = () => encoder.encode(process.env.AUTH_SECRET || 'dev-only-secret-change-me')
