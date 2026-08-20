@@ -54,6 +54,9 @@ async function ensureSchema(){
   await sql`UPDATE leave_types SET allow_negative=TRUE WHERE paid=FALSE`
   await sql`ALTER TABLE holidays ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'COMPANY'`
   await sql`ALTER TABLE holidays ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`
+  await sql`ALTER TABLE holidays ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE`
+  await sql`ALTER TABLE holidays ADD COLUMN IF NOT EXISTS approved_by UUID REFERENCES users(id) ON DELETE SET NULL`
+  await sql`ALTER TABLE holidays ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`
   await sql`ALTER TABLE holidays ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
   await sql`ALTER TABLE holidays DROP CONSTRAINT IF EXISTS holidays_holiday_date_key`
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_holidays_unique_region_date ON holidays(region,holiday_date)`
@@ -66,7 +69,7 @@ async function ensureSchema(){
 async function seedPreset(year,actorId){
  const sets=[['INDIA',indiaPreset(year)],['US',usPreset(year)]]
  for(const [region,items] of sets){
-  for(const [date,name] of items)await sql`INSERT INTO holidays(holiday_date,name,region,optional,active,created_by) VALUES (${date},${name},${region},FALSE,TRUE,${actorId}) ON CONFLICT (region,holiday_date) DO UPDATE SET name=EXCLUDED.name,active=TRUE`
+  for(const [date,name] of items)await sql`INSERT INTO holidays(holiday_date,name,region,optional,approved,active,created_by) VALUES (${date},${name},${region},FALSE,FALSE,TRUE,${actorId}) ON CONFLICT (region,holiday_date) DO UPDATE SET name=EXCLUDED.name,active=TRUE`
  }
 }
 async function ensureBalances(employeeId,year=new Date().getUTCFullYear()){
@@ -153,21 +156,26 @@ export default async function handler(req,res){
   }
 
   if(p[0]==='holidays'&&p.length===1&&m==='GET'){
-   if(user.role==='MANAGER')return ok(res,{holidays:await sql`SELECT * FROM holidays WHERE active=TRUE ORDER BY holiday_date,region`})
+   if(user.role==='MANAGER')return ok(res,{holidays:await sql`SELECT h.*,u.full_name AS approved_by_name FROM holidays h LEFT JOIN users u ON u.id=h.approved_by WHERE h.active=TRUE ORDER BY h.holiday_date,h.region`})
    const employee=await employeeFor(user.id),region=employee?.holiday_region||'INDIA'
-   return ok(res,{holidays:await sql`SELECT * FROM holidays WHERE active=TRUE AND (region IN ('COMPANY','BOTH') OR ${region}='BOTH' OR region=${region}) ORDER BY holiday_date`})
+   return ok(res,{holidays:await sql`SELECT id,holiday_date,name,region,optional FROM holidays WHERE active=TRUE AND approved=TRUE AND (region IN ('COMPANY','BOTH') OR ${region}='BOTH' OR region=${region}) ORDER BY holiday_date`})
   }
   if(p[0]==='holidays'&&p.length===1&&m==='POST'){
-   const manager=await requireManager(req,res);if(!manager)return;const data=await body(req),region=['INDIA','US','BOTH','COMPANY'].includes(data.region)?data.region:'COMPANY'
+   const manager=await requireManager(req,res);if(!manager)return;const data=await body(req),region=['INDIA','US','BOTH','COMPANY'].includes(data.region)?data.region:'COMPANY',approved=Boolean(data.approved)
    if(!data.holiday_date||!String(data.name||'').trim())return bad(res,'Holiday date and name are required')
-   const rows=await sql`INSERT INTO holidays(holiday_date,name,region,optional,active,created_by) VALUES (${data.holiday_date},${String(data.name).trim()},${region},${Boolean(data.optional)},TRUE,${manager.id}) ON CONFLICT(region,holiday_date) DO UPDATE SET name=EXCLUDED.name,optional=EXCLUDED.optional,active=TRUE RETURNING *`
-   await audit(manager.id,'HOLIDAY_SAVED','holiday',rows[0].id,{region,date:data.holiday_date});return created(res,{holiday:rows[0]})
+   const rows=await sql`INSERT INTO holidays(holiday_date,name,region,optional,approved,approved_by,approved_at,active,created_by) VALUES (${data.holiday_date},${String(data.name).trim()},${region},${Boolean(data.optional)},${approved},${approved?manager.id:null},${approved?new Date().toISOString():null},TRUE,${manager.id}) ON CONFLICT(region,holiday_date) DO UPDATE SET name=EXCLUDED.name,optional=EXCLUDED.optional,approved=EXCLUDED.approved,approved_by=EXCLUDED.approved_by,approved_at=EXCLUDED.approved_at,active=TRUE RETURNING *`
+   await audit(manager.id,'HOLIDAY_SAVED','holiday',rows[0].id,{region,date:data.holiday_date,approved});return created(res,{holiday:rows[0]})
   }
   if(p[0]==='holidays'&&p[1]==='preset'&&m==='POST'){
-   const manager=await requireManager(req,res);if(!manager)return;const data=await body(req),year=Number(data.year)||new Date().getUTCFullYear();await seedPreset(year,manager.id);await audit(manager.id,'HOLIDAY_PRESET_LOADED','holiday',null,{year,regions:['INDIA','US']});return ok(res,{year,holidays:await sql`SELECT * FROM holidays WHERE EXTRACT(YEAR FROM holiday_date)=${year} ORDER BY holiday_date,region`})
+   const manager=await requireManager(req,res);if(!manager)return;const data=await body(req),year=Number(data.year)||new Date().getUTCFullYear();await seedPreset(year,manager.id);await audit(manager.id,'HOLIDAY_PRESET_LOADED','holiday',null,{year,regions:['INDIA','US']});return ok(res,{year,holidays:await sql`SELECT * FROM holidays WHERE EXTRACT(YEAR FROM holiday_date)=${year} AND active=TRUE ORDER BY holiday_date,region`})
+  }
+  if(p[0]==='holidays'&&p[1]&&m==='PATCH'){
+   const manager=await requireManager(req,res);if(!manager)return;const data=await body(req),approved=Boolean(data.approved)
+   const rows=await sql`UPDATE holidays SET approved=${approved},approved_by=${approved?manager.id:null},approved_at=${approved?new Date().toISOString():null} WHERE id=${p[1]} AND active=TRUE RETURNING *`;if(!rows.length)return bad(res,'Holiday not found',404)
+   await audit(manager.id,approved?'HOLIDAY_APPROVED':'HOLIDAY_UNAPPROVED','holiday',p[1],{date:rows[0].holiday_date,region:rows[0].region});return ok(res,{holiday:rows[0]})
   }
   if(p[0]==='holidays'&&p[1]&&m==='DELETE'){
-   const manager=await requireManager(req,res);if(!manager)return;await sql`UPDATE holidays SET active=FALSE WHERE id=${p[1]}`;await audit(manager.id,'HOLIDAY_REMOVED','holiday',p[1]);return ok(res,{removed:true})
+   const manager=await requireManager(req,res);if(!manager)return;await sql`UPDATE holidays SET active=FALSE,approved=FALSE,approved_by=NULL,approved_at=NULL WHERE id=${p[1]}`;await audit(manager.id,'HOLIDAY_REMOVED','holiday',p[1]);return ok(res,{removed:true})
   }
 
   if(p[0]==='leave'&&p[1]==='requests'&&p.length===2&&m==='GET'){
@@ -219,7 +227,7 @@ export default async function handler(req,res){
    const start=String(req.query?.start||new Date(Date.now()-30*86400000).toISOString().slice(0,10)),end=String(req.query?.end||new Date(Date.now()+120*86400000).toISOString().slice(0,10))
    const leaves=await sql`SELECT lr.start_date,lr.end_date,lr.day_type,lr.days,u.full_name,e.employee_code,e.department_id,lt.code,lt.name AS leave_type FROM leave_requests lr JOIN employees e ON e.id=lr.employee_id JOIN users u ON u.id=e.user_id JOIN leave_types lt ON lt.id=lr.leave_type_id WHERE lr.status='APPROVED' AND lr.end_date>=${start}::date AND lr.start_date<=${end}::date ORDER BY lr.start_date,u.full_name`
    if(user.role==='MANAGER')return ok(res,{leaves,holidays:await sql`SELECT * FROM holidays WHERE active=TRUE AND holiday_date BETWEEN ${start}::date AND ${end}::date ORDER BY holiday_date,region`})
-   const employee=await employeeFor(user.id),region=employee?.holiday_region||'INDIA';return ok(res,{leaves,weekly_off_days:employee?.weekly_off_days||[0],holiday_region:region,holidays:await sql`SELECT * FROM holidays WHERE active=TRUE AND holiday_date BETWEEN ${start}::date AND ${end}::date AND (region IN ('COMPANY','BOTH') OR ${region}='BOTH' OR region=${region}) ORDER BY holiday_date`})
+   const employee=await employeeFor(user.id),region=employee?.holiday_region||'INDIA';return ok(res,{leaves,weekly_off_days:employee?.weekly_off_days||[0],holiday_region:region,holidays:await sql`SELECT id,holiday_date,name,region,optional FROM holidays WHERE active=TRUE AND approved=TRUE AND holiday_date BETWEEN ${start}::date AND ${end}::date AND (region IN ('COMPANY','BOTH') OR ${region}='BOTH' OR region=${region}) ORDER BY holiday_date`})
   }
 
   if(p[0]==='audit'&&m==='GET'){
