@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/sync-manager.mjs && vite build",
     "preview": "vite preview",
     "db:setup": "node scripts/setup-db.mjs",
     "check": "npm run build"
