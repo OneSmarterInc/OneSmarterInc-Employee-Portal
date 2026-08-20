@@ -3,6 +3,7 @@
   "framework": "vite",
   "rewrites": [
     { "source": "/api/enhancements/:route*", "destination": "/api/enhancements" },
+    { "source": "/api/hr/:route*", "destination": "/api/hr" },
     { "source": "/api/:route*", "destination": "/api/handler" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
