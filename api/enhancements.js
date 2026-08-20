@@ -120,18 +120,13 @@ async function createEmployee(req, manager, data) {
   return { employee: { ...employee, full_name: user.full_name, official_email: user.email }, email_delivery: delivery }
 }
 
-async function employeeRows(scope) {
-  const filter = scope === 'former'
-    ? sql`AND (e.status='INACTIVE' OR EXISTS (SELECT 1 FROM resignations rx WHERE rx.employee_id=e.id AND rx.status='COMPLETED'))`
-    : scope === 'current'
-      ? sql`AND e.status <> 'INACTIVE' AND NOT EXISTS (SELECT 1 FROM resignations rx WHERE rx.employee_id=e.id AND rx.status='COMPLETED')`
-      : sql``
+async function employeeRows() {
   return sql`SELECT e.id,e.employee_code,e.designation,e.wfh_allowed,e.status,e.date_of_joining,e.personal_email,e.official_phone,e.personal_phone,
       u.full_name,u.email AS official_email,u.active,d.name AS department,
       (SELECT COALESCE(r.approved_last_day,r.requested_last_day) FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS last_day,
       (SELECT r.status FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS resignation_status
     FROM employees e JOIN users u ON u.id=e.user_id LEFT JOIN departments d ON d.id=e.department_id
-    WHERE TRUE ${filter} ORDER BY u.full_name`
+    ORDER BY u.full_name`
 }
 
 export default async function handler(req, res) {
@@ -143,8 +138,7 @@ export default async function handler(req, res) {
     await ensureSchema()
 
     if (p[0] === 'employees' && p.length === 1 && m === 'GET') {
-      const scope = ['current','former','all'].includes(String(req.query.scope || '')) ? String(req.query.scope) : 'all'
-      return ok(res, { employees: await employeeRows(scope) })
+      return ok(res, { employees: await employeeRows() })
     }
 
     if (p[0] === 'employees' && p.length === 1 && m === 'POST') {
