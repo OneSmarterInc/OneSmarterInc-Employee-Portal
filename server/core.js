@@ -245,9 +245,9 @@ export async function businessDays(startDate, endDate, employeeId = null) {
   const offSet = new Set(weeklyOff)
   let holidays
   if (employeeId) {
-    holidays = await sql`SELECT holiday_date::text FROM holidays WHERE COALESCE(active,TRUE)=TRUE AND holiday_date BETWEEN ${startDate}::date AND ${endDate}::date AND (region IN ('COMPANY','BOTH') OR ${region}='BOTH' OR region=${region})`
+    holidays = await sql`SELECT holiday_date::text FROM holidays WHERE COALESCE(active,TRUE)=TRUE AND COALESCE(approved,FALSE)=TRUE AND holiday_date BETWEEN ${startDate}::date AND ${endDate}::date AND (region IN ('COMPANY','BOTH') OR ${region}='BOTH' OR region=${region})`
   } else {
-    holidays = await sql`SELECT holiday_date::text FROM holidays WHERE COALESCE(active,TRUE)=TRUE AND holiday_date BETWEEN ${startDate}::date AND ${endDate}::date`
+    holidays = await sql`SELECT holiday_date::text FROM holidays WHERE COALESCE(active,TRUE)=TRUE AND COALESCE(approved,FALSE)=TRUE AND holiday_date BETWEEN ${startDate}::date AND ${endDate}::date`
   }
   const holidaySet = new Set(holidays.map(h => String(h.holiday_date).slice(0, 10)))
   let days = 0
