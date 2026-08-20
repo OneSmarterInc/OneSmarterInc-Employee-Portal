@@ -2,8 +2,9 @@ import fs from 'node:fs/promises'
 import bcrypt from 'bcryptjs'
 import { neon } from '@neondatabase/serverless'
 
-if (!process.env.POSTGRES_URL) throw new Error('POSTGRES_URL is required')
-const sql = neon(process.env.POSTGRES_URL)
+const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED
+if (!databaseUrl) throw new Error('A Neon/Postgres database URL is required (POSTGRES_URL, DATABASE_URL, or DATABASE_URL_UNPOOLED)')
+const sql = neon(databaseUrl)
 const schema = await fs.readFile(new URL('../db/schema.sql', import.meta.url), 'utf8')
 for (const statement of schema.split(/;\s*(?:\n|$)/).map(s => s.trim()).filter(Boolean)) {
   await sql.query(statement)
