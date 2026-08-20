@@ -1,156 +1,20 @@
 import bcrypt from 'bcryptjs'
 import nodemailer from 'nodemailer'
-import { sql, json, body, requireManager, audit, decrypt, smtpConfig, employeeCode, brandedEmail, emailDetails } from '../server/core.js'
+import { sql,json,body,requireManager,audit,decrypt,smtpConfig,employeeCode,brandedEmail,emailDetails,sendEmail,hashPassword } from '../server/core.js'
 
-const ok = (res, data = {}) => json(res, 200, data)
-const created = (res, data = {}) => json(res, 201, data)
-const bad = (res, message, status = 400) => json(res, status, { error: message })
-const method = req => (req.method || 'GET').toUpperCase()
-
-function parts(req) {
-  const raw = req.query?.route
-  if (Array.isArray(raw)) return raw.flatMap(v => String(v).split('/')).filter(Boolean)
-  if (typeof raw === 'string') return raw.split('/').filter(Boolean)
-  return []
-}
-
+const ok=(res,data={})=>json(res,200,data),created=(res,data={})=>json(res,201,data),bad=(res,message,status=400)=>json(res,status,{error:message}),method=req=>(req.method||'GET').toUpperCase()
+function parts(req){const raw=req.query?.route;if(Array.isArray(raw))return raw.flatMap(v=>String(v).split('/')).filter(Boolean);if(typeof raw==='string')return raw.split('/').filter(Boolean);return []}
 let schemaPromise
-function ensureSchema() {
-  if (!schemaPromise) schemaPromise = (async () => {
-    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS personal_email TEXT`
-    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS official_phone TEXT`
-    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS personal_phone TEXT`
-    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS holiday_region TEXT NOT NULL DEFAULT 'INDIA'`
-    await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS weekly_off_days INTEGER[] NOT NULL DEFAULT ARRAY[0]`
-    await sql`UPDATE employees SET official_phone=phone WHERE official_phone IS NULL AND phone IS NOT NULL`
-  })()
-  return schemaPromise
-}
+function ensureSchema(){if(!schemaPromise)schemaPromise=(async()=>{await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS personal_email TEXT`;await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS official_phone TEXT`;await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS personal_phone TEXT`;await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS holiday_region TEXT NOT NULL DEFAULT 'INDIA'`;await sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS weekly_off_days INTEGER[] NOT NULL DEFAULT ARRAY[0]`;await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS access_role TEXT`;await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 1`;await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE`;await sql`UPDATE employees SET official_phone=phone WHERE official_phone IS NULL AND phone IS NOT NULL`})();return schemaPromise}
+function portalUrl(req){if(process.env.APP_URL)return String(process.env.APP_URL).replace(/\/$/,'');const host=req.headers['x-forwarded-host']||req.headers.host||process.env.VERCEL_PROJECT_PRODUCTION_URL;return host?`https://${host}`:'https://one-smarter-inc-employee-portal.vercel.app'}
+function smtpTransportOptions(cfg){const port=Number(cfg?.port)||587;return{host:cfg?.host||'smtp.ionos.com',port,secure:port===465,requireTLS:port===587,auth:{user:cfg.username,pass:decrypt(cfg.password_enc)},tls:{servername:cfg?.host||'smtp.ionos.com',minVersion:'TLSv1.2'},connectionTimeout:15000,greetingTimeout:15000,socketTimeout:20000}}
+async function transportFromSettings(){const cfg=await smtpConfig();if(!cfg?.username||!cfg?.password_enc||!cfg?.from_email)return{cfg:null,transporter:null};const normalized={...cfg,host:cfg.host||'smtp.ionos.com',port:Number(cfg.port)||587};return{cfg:normalized,transporter:nodemailer.createTransport(smtpTransportOptions(normalized))}}
+async function sendDetailed({to,subject,html}){const{cfg,transporter}=await transportFromSettings();if(!transporter)return{configured:false,accepted:[],rejected:[],message:'SMTP is not configured'};const info=await transporter.sendMail({from:`"${cfg.from_name||'OneSmarter, Inc.'}" <${cfg.from_email}>`,to,subject,html:brandedEmail({title:subject,bodyHtml:html})});const accepted=(info.accepted||[]).map(String),rejected=(info.rejected||[]).map(String);return{configured:true,accepted,rejected,messageId:info.messageId||'',response:info.response||'',deliveredToServer:accepted.length>0&&rejected.length===0}}
+async function departmentId(name){const clean=String(name||'').trim();if(!clean)return null;const rows=await sql`INSERT INTO departments(name) VALUES (${clean}) ON CONFLICT(name) DO UPDATE SET active=TRUE RETURNING id`;return rows[0].id}
+async function welcomeEmail(req,employee,user,password,personalEmail){const url=portalUrl(req),offNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'],weekly=(employee.weekly_off_days||[0]).map(v=>offNames[Number(v)]).filter(Boolean).join(', '),html=`<p>Hello ${user.full_name},</p><p>Your OneSmarter employee portal account has been created.</p>${emailDetails([['Portal',`<a href="${url}">${url}</a>`],['Employee ID',employee.employee_code],['Login email',user.email],['Temporary password',password],['Holiday calendar',employee.holiday_region],['Weekly off',weekly||'None']])}<p><b>You must change this temporary password after your first sign-in before using the rest of the portal.</b></p><p>Regards,<br/>OneSmarter, Inc.</p>`,recipients=[...new Set([user.email,personalEmail].filter(Boolean).map(v=>String(v).trim().toLowerCase()))],deliveries=[];for(const to of recipients){try{deliveries.push({to,...(await sendDetailed({to,subject:'Your OneSmarter employee portal account',html}))})}catch(error){deliveries.push({to,configured:true,accepted:[],rejected:[to],error:error.message})}}return deliveries}
+async function createEmployee(req,manager,data){const name=String(data.name||'').trim(),officialEmail=String(data.official_email||data.email||'').trim().toLowerCase(),personalEmail=String(data.personal_email||'').trim().toLowerCase()||null,password=String(data.password??'');if(!name||!officialEmail||!password)throw new Error('Name, official email and temporary password are required');const region=['INDIA','US','BOTH'].includes(data.holiday_region)?data.holiday_region:'INDIA',weeklyOff=Array.isArray(data.weekly_off_days)?[...new Set(data.weekly_off_days.map(Number).filter(v=>v>=0&&v<=6))]:[0],hash=await bcrypt.hash(password,12),userRows=await sql`INSERT INTO users(email,password_hash,full_name,role,access_role,must_change_password) VALUES (${officialEmail},${hash},${name},'EMPLOYEE','EMPLOYEE',TRUE) RETURNING id,email,full_name`,user=userRows[0],depId=await departmentId(data.department),code=String(data.employee_code||'').trim()||employeeCode(),empRows=await sql`INSERT INTO employees(user_id,employee_code,department_id,designation,date_of_joining,manager_id,wfh_allowed,phone,official_phone,personal_phone,personal_email,holiday_region,weekly_off_days) VALUES (${user.id},${code},${depId},${data.designation||null},${data.date_of_joining||null},${manager.id},${Boolean(data.wfh_allowed)},${data.official_phone||null},${data.official_phone||null},${data.personal_phone||null},${personalEmail},${region},${weeklyOff}) RETURNING *`,employee=empRows[0];await sql`INSERT INTO leave_balances(employee_id,leave_type_id,year,opening) SELECT ${employee.id},id,EXTRACT(YEAR FROM CURRENT_DATE)::int,default_days FROM leave_types WHERE active=TRUE ON CONFLICT DO NOTHING`;const delivery=await welcomeEmail(req,employee,user,password,personalEmail);await audit(manager.id,'EMPLOYEE_CREATED','employee',employee.id,{official_email:officialEmail,personal_email:personalEmail,wfh_allowed:employee.wfh_allowed,holiday_region:region,weekly_off_days:weeklyOff});return{employee:{...employee,full_name:user.full_name,official_email:user.email},email_delivery:delivery}}
+async function employeeRows(){return sql`SELECT e.id,e.employee_code,e.designation,e.wfh_allowed,e.status,e.date_of_joining,e.personal_email,e.official_phone,e.personal_phone,e.holiday_region,e.weekly_off_days,e.probation_end_date,e.probation_status,u.full_name,u.email AS official_email,u.active,d.name AS department,(SELECT COALESCE(r.approved_last_day,r.requested_last_day) FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS last_day,(SELECT r.status FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS resignation_status FROM employees e JOIN users u ON u.id=e.user_id LEFT JOIN departments d ON d.id=e.department_id ORDER BY u.full_name`}
 
-function portalUrl(req) {
-  if (process.env.APP_URL) return String(process.env.APP_URL).replace(/\/$/, '')
-  const host = req.headers['x-forwarded-host'] || req.headers.host || process.env.VERCEL_PROJECT_PRODUCTION_URL
-  return host ? `https://${host}` : 'https://one-smarter-inc-employee-portal.vercel.app'
-}
-
-function smtpTransportOptions(cfg) {
-  const port = Number(cfg?.port) || 587
-  return {
-    host: cfg?.host || 'smtp.ionos.com',
-    port,
-    secure: port === 465,
-    requireTLS: port === 587,
-    auth: { user: cfg.username, pass: decrypt(cfg.password_enc) },
-    tls: { servername: cfg?.host || 'smtp.ionos.com', minVersion: 'TLSv1.2' },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-  }
-}
-
-async function transportFromSettings() {
-  const cfg = await smtpConfig()
-  if (!cfg?.username || !cfg?.password_enc || !cfg?.from_email) return { cfg: null, transporter: null }
-  const normalized = { ...cfg, host: cfg.host || 'smtp.ionos.com', port: Number(cfg.port) || 587 }
-  return { cfg: normalized, transporter: nodemailer.createTransport(smtpTransportOptions(normalized)) }
-}
-
-async function sendDetailed({ to, subject, html }) {
-  const { cfg, transporter } = await transportFromSettings()
-  if (!transporter) return { configured: false, accepted: [], rejected: [], message: 'SMTP is not configured' }
-  const info = await transporter.sendMail({
-    from: `"${cfg.from_name || 'OneSmarter, Inc.'}" <${cfg.from_email}>`,
-    to,
-    subject,
-    html: brandedEmail({ title: subject, bodyHtml: html }),
-  })
-  const accepted = (info.accepted || []).map(String)
-  const rejected = (info.rejected || []).map(String)
-  return { configured: true, accepted, rejected, messageId: info.messageId || '', response: info.response || '', deliveredToServer: accepted.length > 0 && rejected.length === 0 }
-}
-
-async function departmentId(name) {
-  const clean = String(name || '').trim()
-  if (!clean) return null
-  const rows = await sql`INSERT INTO departments(name) VALUES (${clean}) ON CONFLICT(name) DO UPDATE SET active=TRUE RETURNING id`
-  return rows[0].id
-}
-
-async function welcomeEmail(req, employee, user, password, personalEmail) {
-  const url = portalUrl(req)
-  const offNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
-  const weekly=(employee.weekly_off_days||[0]).map(v=>offNames[Number(v)]).filter(Boolean).join(', ')
-  const html = `<p>Hello ${user.full_name},</p><p>Your OneSmarter employee portal account has been created.</p>${emailDetails([['Portal',`<a href="${url}">${url}</a>`],['Employee ID',employee.employee_code],['Login email',user.email],['Temporary password',password],['Holiday calendar',employee.holiday_region],['Weekly off',weekly||'None']])}<p>Please sign in and change your password from Account after your first login.</p><p>Regards,<br/>OneSmarter, Inc.</p>`
-  const recipients = [...new Set([user.email, personalEmail].filter(Boolean).map(v => String(v).trim().toLowerCase()))]
-  const deliveries = []
-  for (const to of recipients) {
-    try { deliveries.push({ to, ...(await sendDetailed({ to, subject: 'Your OneSmarter employee portal account', html })) }) }
-    catch (error) { deliveries.push({ to, configured: true, accepted: [], rejected: [to], error: error.message }) }
-  }
-  return deliveries
-}
-
-async function createEmployee(req, manager, data) {
-  const name = String(data.name || '').trim()
-  const officialEmail = String(data.official_email || data.email || '').trim().toLowerCase()
-  const personalEmail = String(data.personal_email || '').trim().toLowerCase() || null
-  const password = String(data.password ?? '')
-  if (!name || !officialEmail || !password) throw new Error('Name, official email and temporary password are required')
-  const region = ['INDIA','US','BOTH'].includes(data.holiday_region) ? data.holiday_region : 'INDIA'
-  const weeklyOff = Array.isArray(data.weekly_off_days) ? [...new Set(data.weekly_off_days.map(Number).filter(v=>v>=0&&v<=6))] : [0]
-  const hash = await bcrypt.hash(password, 12)
-  const userRows = await sql`INSERT INTO users(email,password_hash,full_name,role) VALUES (${officialEmail},${hash},${name},'EMPLOYEE') RETURNING id,email,full_name`
-  const user = userRows[0]
-  const depId = await departmentId(data.department)
-  const code = String(data.employee_code || '').trim() || employeeCode()
-  const empRows = await sql`INSERT INTO employees(user_id,employee_code,department_id,designation,date_of_joining,manager_id,wfh_allowed,phone,official_phone,personal_phone,personal_email,holiday_region,weekly_off_days) VALUES (${user.id},${code},${depId},${data.designation || null},${data.date_of_joining || null},${manager.id},${Boolean(data.wfh_allowed)},${data.official_phone || null},${data.official_phone || null},${data.personal_phone || null},${personalEmail},${region},${weeklyOff}) RETURNING *`
-  const employee = empRows[0]
-  await sql`INSERT INTO leave_balances(employee_id,leave_type_id,year,opening) SELECT ${employee.id}, id, EXTRACT(YEAR FROM CURRENT_DATE)::int, default_days FROM leave_types WHERE active=TRUE ON CONFLICT DO NOTHING`
-  const delivery = await welcomeEmail(req, employee, user, password, personalEmail)
-  await audit(manager.id, 'EMPLOYEE_CREATED', 'employee', employee.id, { official_email: officialEmail, personal_email: personalEmail, wfh_allowed: employee.wfh_allowed, holiday_region: region, weekly_off_days: weeklyOff })
-  return { employee: { ...employee, full_name: user.full_name, official_email: user.email }, email_delivery: delivery }
-}
-
-async function employeeRows() {
-  return sql`SELECT e.id,e.employee_code,e.designation,e.wfh_allowed,e.status,e.date_of_joining,e.personal_email,e.official_phone,e.personal_phone,e.holiday_region,e.weekly_off_days,u.full_name,u.email AS official_email,u.active,d.name AS department,(SELECT COALESCE(r.approved_last_day,r.requested_last_day) FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS last_day,(SELECT r.status FROM resignations r WHERE r.employee_id=e.id ORDER BY r.created_at DESC LIMIT 1) AS resignation_status FROM employees e JOIN users u ON u.id=e.user_id LEFT JOIN departments d ON d.id=e.department_id ORDER BY u.full_name`
-}
-
-export default async function handler(req, res) {
-  const p = parts(req), m = method(req)
-  try {
-    const manager = await requireManager(req, res)
-    if (!manager) return
-    await ensureSchema()
-    if (p[0] === 'employees' && p.length === 1 && m === 'GET') return ok(res, { employees: await employeeRows() })
-    if (p[0] === 'employees' && p.length === 1 && m === 'POST') return created(res, await createEmployee(req, manager, await body(req)))
-    if (p[0] === 'employees' && p[1] === 'bulk' && m === 'POST') {
-      const payload = await body(req), employees = Array.isArray(payload.employees) ? payload.employees.slice(0, 50) : []
-      if (!employees.length) return bad(res, 'No employees found in upload')
-      const results = []
-      for (let i = 0; i < employees.length; i += 1) {
-        try { const result = await createEmployee(req, manager, employees[i]); results.push({ row:i+2, ok:true, employee:result.employee, email_delivery:result.email_delivery }) }
-        catch (error) { results.push({ row:i+2, ok:false, error:String(error.message || error) }) }
-      }
-      await audit(manager.id, 'EMPLOYEE_BULK_UPLOAD', 'employee', null, { rows:employees.length, created:results.filter(r=>r.ok).length })
-      return ok(res, { results, created:results.filter(r=>r.ok).length, failed:results.filter(r=>!r.ok).length })
-    }
-    if (p[0] === 'smtp' && p[1] === 'test' && m === 'POST') {
-      const data = await body(req), target = String(data.email || manager.email || '').trim().toLowerCase()
-      if (!target) return bad(res, 'Test recipient is required')
-      const { transporter, cfg } = await transportFromSettings()
-      if (!transporter) return bad(res, 'SMTP is not configured')
-      await transporter.verify()
-      const result = await sendDetailed({ to:target, subject:'OneSmarter SMTP delivery test', html:'<p>This message confirms that the OneSmarter employee portal connected to IONOS SMTP and submitted a test email.</p>' })
-      if (!result.accepted.length) return bad(res, result.response || 'SMTP server did not accept the recipient', 502)
-      await audit(manager.id, 'SMTP_TEST_SENT', 'settings', 'smtp', { target, host:cfg.host, port:cfg.port, accepted:result.accepted, rejected:result.rejected, response:result.response })
-      return ok(res, { email:target, host:cfg.host, port:cfg.port, security:Number(cfg.port)===465?'SSL/TLS':'STARTTLS', ...result })
-    }
-    return bad(res, 'Not found', 404)
-  } catch (error) {
-    console.error(error)
-    const message = String(error?.message || '')
-    if (message.includes('duplicate key')) return bad(res, 'An employee with that email or employee ID already exists', 409)
-    if (message.includes('wrong version number')) return bad(res, 'SMTP TLS mode does not match the port. For IONOS use port 587 with STARTTLS or port 465 with SSL/TLS.', 502)
-    return bad(res, error?.message || 'Unexpected server error', 500)
-  }
-}
+export default async function handler(req,res){const p=parts(req),m=method(req);try{const manager=await requireManager(req,res);if(!manager)return;await ensureSchema();if(p[0]==='employees'&&p.length===1&&m==='GET')return ok(res,{employees:await employeeRows()});if(p[0]==='employees'&&p.length===1&&m==='POST')return created(res,await createEmployee(req,manager,await body(req)));if(p[0]==='employees'&&p[1]==='bulk'&&m==='POST'){const payload=await body(req),employees=Array.isArray(payload.employees)?payload.employees.slice(0,50):[];if(!employees.length)return bad(res,'No employees found in upload');const results=[];for(let i=0;i<employees.length;i+=1){try{const result=await createEmployee(req,manager,employees[i]);results.push({row:i+2,ok:true,employee:result.employee,email_delivery:result.email_delivery})}catch(error){results.push({row:i+2,ok:false,error:String(error.message||error)})}}await audit(manager.id,'EMPLOYEE_BULK_UPLOAD','employee',null,{rows:employees.length,created:results.filter(r=>r.ok).length});return ok(res,{results,created:results.filter(r=>r.ok).length,failed:results.filter(r=>!r.ok).length})}
+ if(p[0]==='employees'&&p[1]&&p[2]==='reset-password'&&m==='PATCH'){const d=await body(req),password=String(d.password??'');if(password.length<10)return bad(res,'Temporary password must be at least 10 characters; there is no maximum length');const row=(await sql`SELECT e.id,e.user_id,e.employee_code,u.email,u.full_name FROM employees e JOIN users u ON u.id=e.user_id WHERE e.id=${p[1]} LIMIT 1`)[0];if(!row)return bad(res,'Employee not found',404);const hash=await hashPassword(password);await sql`UPDATE users SET password_hash=${hash},must_change_password=TRUE,session_version=session_version+1,active=TRUE,updated_at=NOW() WHERE id=${row.user_id}`;await audit(manager.id,'EMPLOYEE_PASSWORD_RESET','employee',row.id,{});try{await sendEmail({to:row.email,subject:'Your OneSmarter temporary password was reset',html:`<p>Hello ${row.full_name},</p><p>Your temporary portal password has been reset by an administrator.</p>${emailDetails([['Employee ID',row.employee_code],['Login email',row.email],['Temporary password',password]])}<p>You will be required to change it after signing in.</p>`})}catch{}return ok(res,{reset:true})}
+ if(p[0]==='smtp'&&p[1]==='test'&&m==='POST'){const data=await body(req),target=String(data.email||manager.email||'').trim().toLowerCase();if(!target)return bad(res,'Test recipient is required');const{transporter,cfg}=await transportFromSettings();if(!transporter)return bad(res,'SMTP is not configured');await transporter.verify();const result=await sendDetailed({to:target,subject:'OneSmarter SMTP delivery test',html:'<p>This message confirms that the OneSmarter employee portal connected to IONOS SMTP and submitted a test email.</p>'});if(!result.accepted.length)return bad(res,result.response||'SMTP server did not accept the recipient',502);await audit(manager.id,'SMTP_TEST_SENT','settings','smtp',{target,host:cfg.host,port:cfg.port,accepted:result.accepted,rejected:result.rejected,response:result.response});return ok(res,{email:target,host:cfg.host,port:cfg.port,security:Number(cfg.port)===465?'SSL/TLS':'STARTTLS',...result})}return bad(res,'Not found',404)}catch(error){console.error(error);const message=String(error?.message||'');if(message.includes('duplicate key'))return bad(res,'An employee with that email or employee ID already exists',409);if(message.includes('wrong version number'))return bad(res,'SMTP TLS mode does not match the port. For IONOS use port 587 with STARTTLS or port 465 with SSL/TLS.',502);return bad(res,error?.message||'Unexpected server error',500)}}
