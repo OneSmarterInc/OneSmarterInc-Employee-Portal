@@ -42,11 +42,7 @@ function cookies(req) {
 
 export async function issueSession(res, user) {
   const token = await new SignJWT({ role: user.role, name: user.full_name })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setSubject(user.id)
-    .setIssuedAt()
-    .setExpirationTime('12h')
-    .sign(secret())
+    .setProtectedHeader({ alg: 'HS256' }).setSubject(user.id).setIssuedAt().setExpirationTime('12h').sign(secret())
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : ''
   res.setHeader('Set-Cookie', `osi_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${secure}`)
 }
@@ -118,17 +114,28 @@ export async function smtpConfig() {
   return rows[0] || null
 }
 
+function smtpTransport(cfg) {
+  const host = cfg?.host || 'smtp.ionos.com'
+  const port = Number(cfg?.port) || 587
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    requireTLS: port === 587,
+    auth: { user: cfg.username, pass: decrypt(cfg.password_enc) },
+    tls: { servername: host, minVersion: 'TLSv1.2' },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
+  })
+}
+
 export async function sendEmail({ to, subject, html }) {
   const cfg = await smtpConfig()
-  if (!cfg?.host || !cfg?.username || !cfg?.password_enc || !cfg?.from_email) return { skipped: true }
-  const transporter = nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port || 587,
-    secure: cfg.secure,
-    auth: { user: cfg.username, pass: decrypt(cfg.password_enc) },
-  })
-  await transporter.sendMail({ from: `"${cfg.from_name || 'One Smarter Inc.'}" <${cfg.from_email}>`, to, subject, html })
-  return { sent: true }
+  if (!cfg?.username || !cfg?.password_enc || !cfg?.from_email) return { skipped: true }
+  const transporter = smtpTransport(cfg)
+  const info = await transporter.sendMail({ from: `"${cfg.from_name || 'OneSmarter, Inc.'}" <${cfg.from_email}>`, to, subject, html })
+  return { sent: true, accepted: (info.accepted || []).map(String), rejected: (info.rejected || []).map(String), response: info.response || '' }
 }
 
 export async function notifyManagers(title, message, link, subject = title) {
@@ -187,8 +194,7 @@ export async function businessDays(startDate, endDate) {
   const holidaySet = new Set(holidays.map(h => String(h.holiday_date).slice(0, 10)))
   let days = 0
   for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
-    const weekday = d.getUTCDay()
-    const key = d.toISOString().slice(0, 10)
+    const weekday = d.getUTCDay(), key = d.toISOString().slice(0, 10)
     if (weekday !== 0 && weekday !== 6 && !holidaySet.has(key)) days += 1
   }
   return days
