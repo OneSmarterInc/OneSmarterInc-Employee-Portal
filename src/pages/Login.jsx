@@ -1,15 +1,12 @@
 import { useState } from 'react'
-import { ArrowRight, ShieldCheck } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ShieldCheck } from 'lucide-react'
 import { api } from '../api.js'
 import { Button, Input } from '../components/UI.jsx'
 import BrandLogo from '../components/BrandLogo.jsx'
 
-export default function Login({ onLogin }) {
-  const [email,setEmail]=useState(''); const [password,setPassword]=useState(''); const [error,setError]=useState(''); const [busy,setBusy]=useState(false)
-  async function submit(e){e.preventDefault();setBusy(true);setError('');try{const r=await api('/auth/login',{method:'POST',body:{email,password}});onLogin(r.user)}catch(err){setError(err.message)}finally{setBusy(false)}}
-  return <div className="login-page"><div className="login-card">
-    <div className="login-brand"><BrandLogo/></div>
-    <div className="login-copy"><div className="soft-icon"><ShieldCheck size={22}/></div><h1>People Portal</h1><p>Attendance, leave, documents and employee services in one secure workspace.</p></div>
-    <form onSubmit={submit} className="form-stack"><label>Official email<Input type="email" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="email" required/></label><label>Password<Input type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" required/></label>{error?<div className="form-error">{error}</div>:null}<Button type="submit" disabled={busy}>{busy?'Signing in…':<>Sign in <ArrowRight size={17}/></>}</Button></form>
-  </div><div className="login-foot">One Smarter Inc. · Internal People Portal</div></div>
+export default function Login({onLogin}){
+ const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[challenge,setChallenge]=useState(null),[code,setCode]=useState('')
+ async function submit(e){e.preventDefault();setBusy(true);setError('');try{const r=await api('/security/login',{method:'POST',body:{email,password}});if(r.requires_2fa){setChallenge(r);setCode('')}else onLogin(r.user)}catch(err){setError(err.message)}finally{setBusy(false)}}
+ async function verify(e){e.preventDefault();setBusy(true);setError('');try{const r=await api('/security/verify-2fa',{method:'POST',body:{challenge_id:challenge.challenge_id,code}});onLogin(r.user)}catch(err){setError(err.message)}finally{setBusy(false)}}
+ return <div className="login-page"><div className="login-card"><div className="login-brand"><BrandLogo/></div><div className="login-copy"><div className="soft-icon"><ShieldCheck size={22}/></div><h1>{challenge?'Verify sign in':'People Portal'}</h1><p>{challenge?`We sent a 6-digit code to ${challenge.email_hint}. The code expires in 10 minutes.`:'Attendance, leave, documents and employee services in one secure workspace.'}</p></div>{challenge?<form onSubmit={verify} className="form-stack"><label>Verification code<Input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,'').slice(0,6))} placeholder="000000" required/></label>{error?<div className="form-error">{error}</div>:null}<Button type="submit" disabled={busy||code.length!==6}>{busy?'Verifying…':<>Verify <ArrowRight size={17}/></>}</Button><button className="text-btn auth-back" type="button" onClick={()=>{setChallenge(null);setCode('');setError('')}}><ArrowLeft size={15}/> Back to password</button></form>:<form onSubmit={submit} className="form-stack"><label>Official email<Input type="email" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="email" required/></label><label>Password<Input type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" required/></label>{error?<div className="form-error">{error}</div>:null}<Button type="submit" disabled={busy}>{busy?'Signing in…':<>Sign in <ArrowRight size={17}/></>}</Button></form>}</div><div className="login-foot">One Smarter Inc. · Internal People Portal</div></div>
 }
