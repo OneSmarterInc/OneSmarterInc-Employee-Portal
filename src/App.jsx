@@ -8,6 +8,7 @@ import Employees from './pages/Employees.jsx'
 import EmployeeDetail from './pages/EmployeeDetail.jsx'
 import Attendance from './pages/Attendance.jsx'
 import Leave from './pages/Leave.jsx'
+import TimeOffRequests from './pages/TimeOffRequests.jsx'
 import Documents from './pages/Documents.jsx'
 import Policies from './pages/Policies.jsx'
 import Resignations from './pages/Resignations.jsx'
@@ -33,6 +34,7 @@ export default function App(){
   <Route path="/notifications" element={<Notifications/>}/>
   <Route path="/attendance" element={<Attendance user={user}/>} />
   <Route path="/leave" element={<Leave user={user}/>} />
+  <Route path="/requests" element={<TimeOffRequests/>}/>
   <Route path="/documents" element={<Documents user={user}/>} />
   <Route path="/policies" element={<Policies user={user}/>} />
   <Route path="/resignation" element={<Resignations user={user}/>} />
