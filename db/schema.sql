@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS employees (
   wfh_notes TEXT,
   emergency_contact TEXT,
   address TEXT,
+  holiday_region TEXT NOT NULL DEFAULT 'INDIA' CHECK (holiday_region IN ('INDIA','US','BOTH')),
+  weekly_off_days INTEGER[] NOT NULL DEFAULT ARRAY[0],
   status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','NOTICE','INACTIVE')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -62,6 +64,9 @@ CREATE TABLE IF NOT EXISTS leave_types (
   code TEXT NOT NULL UNIQUE,
   default_days NUMERIC(6,2) NOT NULL DEFAULT 0,
   paid BOOLEAN NOT NULL DEFAULT TRUE,
+  allow_half_day BOOLEAN NOT NULL DEFAULT TRUE,
+  carry_forward BOOLEAN NOT NULL DEFAULT FALSE,
+  allow_negative BOOLEAN NOT NULL DEFAULT FALSE,
   active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
@@ -74,6 +79,17 @@ CREATE TABLE IF NOT EXISTS leave_balances (
   used NUMERIC(6,2) NOT NULL DEFAULT 0,
   adjustment NUMERIC(6,2) NOT NULL DEFAULT 0,
   UNIQUE(employee_id, leave_type_id, year)
+);
+
+CREATE TABLE IF NOT EXISTS leave_balance_adjustments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  leave_type_id UUID NOT NULL REFERENCES leave_types(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  delta NUMERIC(6,2) NOT NULL,
+  note TEXT NOT NULL,
+  adjusted_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS leave_requests (
@@ -138,6 +154,15 @@ CREATE TABLE IF NOT EXISTS documents (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS file_store (
+  id UUID PRIMARY KEY,
+  pathname TEXT NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  data_base64 TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS resignations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
@@ -154,10 +179,14 @@ CREATE TABLE IF NOT EXISTS resignations (
 
 CREATE TABLE IF NOT EXISTS holidays (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  holiday_date DATE NOT NULL UNIQUE,
+  holiday_date DATE NOT NULL,
   name TEXT NOT NULL,
+  region TEXT NOT NULL DEFAULT 'COMPANY' CHECK (region IN ('INDIA','US','BOTH','COMPANY')),
   optional BOOLEAN NOT NULL DEFAULT FALSE,
-  created_by UUID REFERENCES users(id) ON DELETE SET NULL
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(holiday_date, region)
 );
 
 CREATE TABLE IF NOT EXISTS announcements (
@@ -216,10 +245,11 @@ CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(status, c
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_documents_employee ON documents(employee_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_holidays_region_date ON holidays(region, holiday_date);
 
-INSERT INTO leave_types(name, code, default_days, paid) VALUES
-  ('Casual Leave', 'CL', 12, TRUE),
-  ('Sick Leave', 'SL', 10, TRUE),
-  ('Paid Leave', 'PL', 15, TRUE),
-  ('Unpaid Leave', 'LWP', 0, FALSE)
+INSERT INTO leave_types(name, code, default_days, paid, allow_half_day, carry_forward, allow_negative) VALUES
+  ('Casual Leave', 'CL', 12, TRUE, TRUE, FALSE, FALSE),
+  ('Sick Leave', 'SL', 10, TRUE, TRUE, FALSE, FALSE),
+  ('Paid Leave', 'PL', 15, TRUE, TRUE, FALSE, FALSE),
+  ('Unpaid Leave', 'LWP', 0, FALSE, TRUE, FALSE, TRUE)
 ON CONFLICT (code) DO NOTHING;
