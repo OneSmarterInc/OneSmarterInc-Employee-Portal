@@ -5,7 +5,8 @@ import { SignJWT, jwtVerify } from 'jose'
 import nodemailer from 'nodemailer'
 import { get, put } from '@vercel/blob'
 
-export const sql = neon(process.env.POSTGRES_URL || '')
+const databaseUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED
+export const sql = neon(databaseUrl || '')
 const encoder = new TextEncoder()
 const secret = () => encoder.encode(process.env.AUTH_SECRET || 'dev-only-secret-change-me')
 
