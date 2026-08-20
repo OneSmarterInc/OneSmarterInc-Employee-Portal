@@ -11,6 +11,7 @@ import Leave from './pages/Leave.jsx'
 import TimeOffRequests from './pages/TimeOffRequests.jsx'
 import Documents from './pages/Documents.jsx'
 import Policies from './pages/Policies.jsx'
+import Compliance from './pages/Compliance.jsx'
 import Resignations from './pages/Resignations.jsx'
 import Settings from './pages/Settings.jsx'
 import Audit from './pages/Audit.jsx'
@@ -28,7 +29,7 @@ export default function App(){
  if(!user)return <Routes><Route path="/login" element={<Login onLogin={u=>{setUser(u);setTimeout(refreshUser,0)}}/>}/><Route path="*" element={<Navigate to="/login" replace/>}/></Routes>
  const access=user.access_role||(user.role==='MANAGER'?'SUPER_ADMIN':'EMPLOYEE'),staff=['SUPER_ADMIN','HR_ADMIN','MANAGER'].includes(access),auditor=access==='AUDITOR'
  if(user.must_change_password)return <Layout user={user} onLogout={()=>setUser(null)}><Routes><Route path="/account" element={<Account user={user} onSecurityChange={refreshUser} forced/>}/><Route path="*" element={<Navigate to="/account" replace/>}/></Routes></Layout>
- if(auditor)return <Layout user={user} onLogout={()=>setUser(null)}><Routes><Route path="/reports" element={<Reports/>}/><Route path="/audit" element={<Audit/>}/><Route path="/notifications" element={<Notifications/>}/><Route path="/account" element={<Account user={user} onSecurityChange={refreshUser}/>}/><Route path="*" element={<Navigate to="/reports" replace/>}/></Routes></Layout>
+ if(auditor)return <Layout user={user} onLogout={()=>setUser(null)}><Routes><Route path="/reports" element={<Reports/>}/><Route path="/compliance" element={<Compliance/>}/><Route path="/audit" element={<Audit/>}/><Route path="/notifications" element={<Notifications/>}/><Route path="/account" element={<Account user={user} onSecurityChange={refreshUser}/>}/><Route path="*" element={<Navigate to="/reports" replace/>}/></Routes></Layout>
  return <Layout user={user} onLogout={()=>setUser(null)}><Routes>
   <Route path="/" element={<Dashboard user={user}/>} />
   <Route path="/notifications" element={<Notifications/>}/>
@@ -39,7 +40,7 @@ export default function App(){
   <Route path="/policies" element={<Policies user={user}/>} />
   <Route path="/resignation" element={<Resignations user={user}/>} />
   <Route path="/account" element={<Account user={user} onSecurityChange={refreshUser}/>} />
-  {staff?<><Route path="/employees" element={<Employees/>}/><Route path="/employees/:id" element={<EmployeeDetail/>}/><Route path="/resignations" element={<Resignations user={user}/>}/><Route path="/operations" element={<Operations/>}/><Route path="/reports" element={<Reports/>}/><Route path="/settings" element={<Settings/>}/><Route path="/audit" element={<Audit/>}/></>:null}
+  {staff?<><Route path="/employees" element={<Employees/>}/><Route path="/employees/:id" element={<EmployeeDetail/>}/><Route path="/resignations" element={<Resignations user={user}/>}/><Route path="/operations" element={<Operations/>}/><Route path="/reports" element={<Reports/>}/><Route path="/compliance" element={<Compliance/>}/><Route path="/settings" element={<Settings/>}/><Route path="/audit" element={<Audit/>}/></>:null}
   <Route path="*" element={<Navigate to="/" replace/>}/>
  </Routes></Layout>
 }
